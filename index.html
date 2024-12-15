@@ -1,0 +1,486 @@
+<!DOCTYPE html><html><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><title>ESP32_RCCAR_VIEWER</title>
+<script>
+  var lastTimer=0,lastGui=0,skip_cnt_Timer=0,skip_cnt_Gui=0;
+  var tm_TIMER_HZ,tm_GUI_HZ,tm_DRIVE_ON,tm_SPEED_KMH,tm_STEER_DEG,tm_GEAR_MODE;
+  var tm_cmd_dist,tm_cmd_thgain,tm_cmd_stgain;
+  var vtm_TIMER_HZ=0,vtm_GUI_HZ=0,vtm_DRIVE_ON=0,vtm_SPEED_KMH=0.0,vtm_STEER_DEG=0.0,vtm_GEAR_MODE=0;
+  var cmd_drv=0;cmd_gear=0;cmd_spd=0.0;cmd_str=0.0;  
+  var sts_acc=0,sts_dec=0,sts_left=0,sts_right=0;
+  var canvas, ctx;
+
+  var cmd_dist=100; cmd_thgain=50; cmd_stgain=150;
+ 
+  const OBS_URM = true;
+
+  var CNT; if(OBS_URM) CNT = 31; else CNT = 7;  
+  const CV_DX = 960, CV_CX = 480;
+  const CV_DY = 700, CV_CY = 640;
+  const CV_RATIO = 200.0;
+  var obs = new Array(CNT);
+  if(OBS_URM) { for(let i=0; i<CNT; i++) obs[i] = new Array(5);} //[0]sensor range, [1]range in px, [2]dx, [3]dy, [4]radius
+  else        { for(let i=0; i<CNT; i++) obs[i] = new Array([6],[6],[6],[6]);} //[0]sensor range, [1]range in px, [2]dx, [3]dy, [4]radius, [5]strength
+
+  var trg = new Array(5); //visible,distance,angle,dx,dy
+  var dist = new Array(3);
+  var cross = new Array(5);
+
+  var gateway = `ws://${window.location.hostname}/ws`;
+  var websocket;
+  window.addEventListener('load', onLoad);
+
+  function onOpen(event)  { console.log('Connection opened'); }
+  function onClose(event) { console.log('Connection closed'); setTimeout(initWebSocket, 2000); }
+  function onLoad(event)  { initWebSocket(); }
+  function initWebSocket() 
+  {
+    console.log('Trying to open a WebSocket connection...');
+    websocket = new WebSocket(gateway);
+    websocket.onopen    = onOpen;
+    websocket.onclose   = onClose;
+    websocket.onmessage = onMessage; // <-- add this line
+  }
+  function sendClientData()
+  {
+    if(tm_cmd_dist)   cmd_dist    = tm_cmd_dist.value;
+    if(tm_cmd_thgain) cmd_thgain  = tm_cmd_thgain.value;
+    if(tm_cmd_stgain) cmd_stgain  = tm_cmd_stgain.value;
+
+    var cmd_string = "cmd," + cmd_drv + "," + cmd_spd + "," + cmd_str + "," + cmd_gear + "," + cmd_dist + "," + cmd_thgain + "," + cmd_stgain + ",";
+    websocket.send(cmd_string);
+  }
+  function onMessage(event) 
+  {
+    var resp_string = event.data;
+    var arr_resp = resp_string.split(",");
+
+    vtm_DRIVE_ON=parseInt(arr_resp[0]);vtm_SPEED_KMH=parseFloat(arr_resp[1]);vtm_STEER_DEG=parseFloat(arr_resp[2]);vtm_GEAR_MODE=parseInt(arr_resp[3]);
+    trg[0]=parseInt(arr_resp[4]);
+    trg[1]=parseInt(arr_resp[5]) * 0.001;
+    trg[2]=parseInt(arr_resp[6]) * 0.01;
+
+    var ang1=trg[2]*Math.PI/180.0;
+    trg[3]=parseInt(trg[1]*CV_RATIO*Math.cos(ang1));
+    trg[4]=parseInt(trg[1]*CV_RATIO*Math.sin(ang1));
+
+    dist[0] = parseInt(arr_resp[7]) * 0.001 * CV_RATIO;
+    dist[1] = parseInt(arr_resp[8]) * 0.001 * CV_RATIO;
+    dist[2] = parseInt(arr_resp[9]) * 0.001 * CV_RATIO;
+
+    cross[0]=parseInt(arr_resp[10]);
+    cross[1]=parseInt(arr_resp[11]) * 0.001;
+    cross[2]=parseInt(arr_resp[12]) * 0.01;
+
+    var ang2=cross[2]*Math.PI/180.0;
+    cross[3]=parseInt(cross[1]*CV_RATIO*Math.cos(ang2));
+    cross[4]=parseInt(cross[1]*CV_RATIO*Math.sin(ang2));
+    
+    //console.log(cross);
+
+    if(OBS_URM)
+    {
+        for(let i=0; i<CNT; i++)
+        {
+          var r_stroke = 60;
+          var r_div = 15;
+          var r_multi = r_stroke/r_div;
+
+          ang = parseFloat( (150) - i * r_multi) * Math.PI / 180.0;
+          //console.log(ang);
+          
+          obs[i][0] = parseFloat(arr_resp[13 + i]);                    // sensor data (range in m)
+          obs[i][1] = parseInt(parseFloat(obs[i][0])*CV_RATIO); 			// range in px
+          obs[i][2] = parseInt(parseFloat(obs[i][1])*Math.cos(ang)); // dpx
+          obs[i][3] = parseInt(parseFloat(obs[i][1])*Math.sin(ang)); // dpy
+          obs[i][4] = 50;///obs[i][1] * 0.3; 	// radius        
+        }    
+    }
+    else
+    {
+        for(let i=0; i<CNT; i++)
+        {
+          var r_stroke = 60;
+          var r_div = 3;
+          var r_multi = r_stroke/r_div;
+
+          ang = parseFloat( (150) - i * r_multi) * Math.PI / 180.0;
+          //console.log(ang);
+
+          for(let k=0; k<4; k++)
+          {
+          
+            obs[i][k][0] = parseFloat(arr_resp[13 + 4*i+k]*0.001);             // sensor data (range in m)
+            obs[i][k][5] = parseInt(Math.abs(arr_resp[7 + 28 + 4*i+k]));      // sensor strength ()   
+            obs[i][k][1] = parseInt(parseFloat(obs[i][k][0])*CV_RATIO); 			// range in px
+            obs[i][k][2] = parseInt(parseFloat(obs[i][k][1])*Math.cos(ang));  // dpx
+            obs[i][k][3] = parseInt(parseFloat(obs[i][k][1])*Math.sin(ang));  // dpy
+            obs[i][k][4] = 50;///obs[i][k][1] * 0.3; 	                        // radius        
+            
+          }
+        }  
+    }
+  
+    update_gui();
+    update_gui_hz();
+    update_canvas();
+  }
+  
+  function body_onload_handler()
+  {
+    tm_TIMER_HZ = document.getElementById("tm_TIMER_HZ");tm_GUI_HZ = document.getElementById("tm_GUI_HZ");tm_DRIVE_ON = document.getElementById("tm_DRIVE_ON");tm_SPEED_KMH = document.getElementById("tm_SPEED_KMH");tm_STEER_DEG = document.getElementById("tm_STEER_DEG");tm_GEAR_MODE = document.getElementById("tm_GEAR_MODE");
+    tm_cmd_dist = document.getElementById("tm_cmd_dist");tm_cmd_thgain = document.getElementById("tm_cmd_thgain");tm_cmd_stgain = document.getElementById("tm_cmd_stgain");
+
+    if(tm_cmd_dist) tm_cmd_dist.value = cmd_dist;
+    if(tm_cmd_thgain) tm_cmd_thgain.value = cmd_thgain;
+    if(tm_cmd_stgain) tm_cmd_stgain.value = cmd_stgain;
+
+    setInterval(timer_handler,50);
+    update_canvas();
+  }  
+  function timer_handler()
+  {
+    drv_update();
+    sendClientData();
+    update_timer_hz();
+  }
+  
+  function update_timer_hz()
+  {
+    if(++skip_cnt_Timer>=10)
+    {
+      skip_cnt_Timer=0;
+      var timer_now=Date.now(); var timer_dt=timer_now-lastTimer; lastTimer=timer_now;
+      vtm_TIMER_HZ=(1000.0/parseFloat(timer_dt)*10.0).toFixed(1); 
+      if(tm_TIMER_HZ) tm_TIMER_HZ.value=vtm_TIMER_HZ;
+    }
+  }
+  
+  function update_gui()
+  {
+    if(tm_DRIVE_ON) {tm_DRIVE_ON.value=vtm_DRIVE_ON;}
+    if(tm_SPEED_KMH){tm_SPEED_KMH.value=vtm_SPEED_KMH.toFixed(3);}
+    if(tm_STEER_DEG){tm_STEER_DEG.value=vtm_STEER_DEG.toFixed(3);}    
+    if(tm_GEAR_MODE){tm_GEAR_MODE.value=vtm_GEAR_MODE;}    
+  }
+  function update_gui_hz()
+  {
+    if(++skip_cnt_Gui>=10)
+    {
+      skip_cnt_Gui=0;
+      var timer_now=Date.now(); var timer_dt=timer_now-lastGui; lastGui=timer_now;
+      vtm_GUI_HZ=(1000.0/parseFloat(timer_dt)*10.0).toFixed(1); 
+      if(tm_GUI_HZ) tm_GUI_HZ.value=vtm_GUI_HZ;
+    }
+  }
+  function start_rc()   {cmd_drv=1;drv_stop();}
+  function start_self() {cmd_drv=2;drv_stop();}
+  function stop_rc()    {cmd_drv=0;drv_stop();}
+  function drv_stop()   {cmd_spd=cmd_str=0.0;}
+  function gear_mode()  {cmd_gear=(cmd_gear>0)?0:1;}
+  function drv_update() {cmd_spd=-joystick1.value.y;cmd_str=joystick2.value.x;}
+ 
+  
+  function update_canvas()
+  {
+    canvas = document.getElementById("myCanvas");
+    ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha=0.8; //0.0 = full transparancy/1.0 = no transparancy
+
+    /*
+    //-----------------------------------------------------------
+    //-- background circle 
+    //-----------------------------------------------------------
+    ctx.globalAlpha=0.2;    
+    var dist = cmd_dist*0.01;
+    ctx.beginPath();
+    ctx.arc(CV_CX, CV_CY-40, dist*CV_RATIO, 0, 2 * Math.PI);
+    ctx.fillStyle="#32D49C"; ctx.fill();
+    ctx.closePath();
+    */
+    
+    //-----------------------------------------------------------
+    //-- Vehicle Boxes
+    //-----------------------------------------------------------
+    ctx.globalAlpha=1.0;
+    ctx.beginPath();
+    if(cross[0] == 1) ctx.fillStyle="GreenYellow"; 
+    else if(cross[0] == 2) ctx.fillStyle="aqua"; 
+    else  ctx.fillStyle="DimGray"; 
+    ctx.fillRect(CV_CX-30,CV_CY-40,60,80);
+    ctx.fillStyle="DarkSlateGray"; ctx.fillRect(CV_CX-35,CV_CY-32,12,20); ctx.fillRect(CV_CX+23,CV_CY-32,12,20); ctx.fillRect(CV_CX-35,CV_CY+13,12,20); ctx.fillRect(CV_CX+23,CV_CY+13,12,20);
+    ctx.closePath();
+    
+    /*
+    if(OBS_URM)
+    {
+        for(let i=0; i<CNT; i++)  {
+            if(obs[i][0] > 0) {
+              ctx.beginPath(); 
+              ctx.arc(CV_CX+obs[i][2], CV_CY-obs[i][3], obs[i][4], 0, 2 * Math.PI);
+              //ctx.fillStyle = "rgba(50, 50, " + obs[i][k][1]/1000*255 + ", 0.5)";
+              ctx.fillStyle="DarkGray"; 
+              ctx.fill(); ctx.closePath();
+            }              
+        }
+    }
+    else
+    {
+        for(let i=0; i<CNT; i++)  {
+          for(let k=0; k<4; k++)  {
+            
+            if(obs[i][k][0] > 0) {
+              ctx.beginPath(); 
+              ctx.arc(CV_CX+obs[i][k][2], CV_CY-obs[i][k][3], obs[i][k][4], 0, 2 * Math.PI);
+              ctx.fillStyle = "rgba(50, 50, " + obs[i][k][5]/1000*255 + ", 0.5)";
+              //ctx.fillStyle="DarkGray"; 
+              ctx.fill(); ctx.closePath();
+            }      
+          }        
+        }
+    }    
+    */
+   
+    /*
+    ctx.beginPath();
+    ctx.arc(CV_CX+trg[3], CV_CY-trg[4], 20, 0, 2 * Math.PI);
+    ctx.fillStyle="#D4324D"; ctx.fill();
+    ctx.closePath();
+    //ctx.globalAlpha=1.0;\
+    */
+
+    ctx.globalAlpha=1.0;
+    //-----------------------------------------------------------
+    //-- Distance Circles
+    //-----------------------------------------------------------
+    //dist[0] = 100;
+    ctx.beginPath();
+    ctx.arc(CV_CX+25, CV_CY-40, dist[0], 0, 2 * Math.PI);    
+    ctx.lineWidth = 2; ctx.strokeStyle="#fd9bc2"; ctx.stroke();
+    ctx.closePath();
+
+    ctx.beginPath();
+    ctx.arc(CV_CX+25, CV_CY-40, 5, 0, 2 * Math.PI);
+    ctx.fillStyle="#de025a"; ctx.fill();
+    ctx.closePath();
+    
+
+    //dist[1] = 200;
+    ctx.beginPath();
+    ctx.arc(CV_CX-25, CV_CY-40, dist[1], 0, 2 * Math.PI);    
+    ctx.lineWidth = 2; ctx.strokeStyle="#fd9bc2"; ctx.stroke();
+    ctx.closePath();
+
+    ctx.beginPath();
+    ctx.arc(CV_CX-25, CV_CY-40, 5, 0, 2 * Math.PI);
+    ctx.fillStyle="#de025a"; ctx.fill();
+    ctx.closePath();
+    
+
+    trg[3] = cross[3] = 200;
+    trg[4] = cross[4] = 200;
+
+    //-----------------------------------------------------------
+    //-- Target Arrow
+    //-----------------------------------------------------------
+    ctx.beginPath();
+    ctx.moveTo(CV_CX, CV_CY-40);
+    ctx.lineTo(CV_CX+cross[3], CV_CY-40-cross[4]);
+    ctx.lineWidth = 2; ctx.strokeStyle="#de025a"; ctx.stroke();
+    ctx.closePath();
+
+    //-----------------------------------------------------------
+    //-- Start Point Circle
+    //-----------------------------------------------------------
+    ctx.beginPath();
+    ctx.arc(CV_CX, CV_CY-40, 5, 0, 2 * Math.PI);
+    ctx.fillStyle="#de025a"; ctx.fill();
+    ctx.closePath();
+    
+    //-----------------------------------------------------------
+    //-- Target Circle
+    //-----------------------------------------------------------
+    ctx.beginPath();
+    ctx.arc(CV_CX+cross[3], CV_CY-40-cross[4], 10, 0, 2 * Math.PI);
+    ctx.fillStyle="#de025a"; ctx.fill();
+    ctx.closePath();
+
+    ctx.beginPath();
+    ctx.arc(CV_CX+cross[3], CV_CY-40+cross[4], 10, 0, 2 * Math.PI);
+    ctx.fillStyle="#de025a"; ctx.fill();
+    ctx.closePath();
+
+    ctx.globalAlpha=0.5;
+
+    //-----------------------------------------------------------
+    //-- Target Arrow2
+    //-----------------------------------------------------------
+    ctx.beginPath();
+    ctx.moveTo(CV_CX, CV_CY-40);
+    ctx.lineTo(CV_CX+trg[3], CV_CY-40-trg[4]);
+    ctx.lineWidth = 2; ctx.strokeStyle="#4c00e6"; ctx.stroke();
+    ctx.closePath();
+
+    //-----------------------------------------------------------
+    //-- Target Circle2 (filtered)
+    //-----------------------------------------------------------
+    ctx.beginPath();
+    ctx.arc(CV_CX+trg[3], CV_CY-40-trg[4], 20, 0, 2 * Math.PI);
+    ctx.fillStyle="#4c00e6"; ctx.fill();
+    ctx.closePath();
+
+    //-----------------------------------------------------------
+    //-- background circle 
+    //-----------------------------------------------------------
+    //ctx.globalAlpha=0.2;    
+    var dist_val = cmd_dist*0.01;
+
+    ctx.beginPath();
+    ctx.arc(CV_CX, CV_CY-40, dist_val*CV_RATIO, 0, 2 * Math.PI);
+    //ctx.fillStyle="blue"; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle="#4c00e6"; ctx.stroke();
+    ctx.closePath();
+   
+  }
+</script>
+<style>
+  input[type=text] { text-align: center; font-size: 16px; font-weight: bold; width: 70px;}
+  input[type=button] { text-align: center; font-size: 36px; font-weight: bold; height:70px;}    
+</style>
+<body onload="body_onload_handler()">
+  <table width="100%" style="text-align: center; font-weight: bold;">
+  <tr>
+  <td width="18%"> 갱신속도 <input type="text" id="tm_TIMER_HZ" value="0"></td>
+  <td width="16%"> 화면속도 <input type="text" id="tm_GUI_HZ" value="0"></td>
+  <td width="16%"> 운전모드 <input type="text" id="tm_DRIVE_ON" value="0"></td>
+  <td width="16%"> 차량속력 <input type="text" id="tm_SPEED_KMH" value="0"></td>
+  <td width="16%"> 차량회전 <input type="text" id="tm_STEER_DEG" value="0"></td>
+  <td width="18%"> 기어모드 <input type="text" id="tm_GEAR_MODE" value="0"></td>
+  </tr>
+  <tr><td colspan="6"></td></tr>
+  <tr><td colspan="6">
+  <table width="100%" style="text-align: center; font-weight: bold;">
+  <tr>
+    <td style="background-color:lightgray; width:250px; height:250px;">
+      <div id="stick1" align="center" style="position:relative;">
+      <table><tr><td style="width:50px; height:50px; background-color:darkgreen;"></td></tr></table>
+      </div>
+    </td>
+    <td>
+    <input type="button" value="원격 시작" style="width:45%; "  onclick="start_rc()">&nbsp;
+    <input type="button" value="자율 시작" style="width:45%;"  onclick="start_self()"><br><br>
+    <input type="button" value="종    료"  style="width:90%;" onclick="stop_rc()"><br><br>
+    <h style="font-size:30px;">간격(cm):</h> <input id="tm_cmd_dist" type="number" value="0" style="width:100px; font-size:30px; font-weight:bold; text-align:center;" >&nbsp;&nbsp;
+    <h style="font-size:30px;">속도배율(%):</h> <input id="tm_cmd_thgain" type="number" value="0" style="width:100px; font-size:30px; font-weight:bold; text-align:center;" >&nbsp;&nbsp;
+    <h style="font-size:30px;">조향배율(%):</h> <input id="tm_cmd_stgain" type="number" value="0" style="width:100px; font-size:30px; font-weight:bold; text-align:center;" >
+
+    <!--<input type="button" value="비상 정지" style="width:45%;"  onclick="drv_stop();">&nbsp;
+    <input type="button" value="기어 모드" style="width:45%;"  onclick="gear_mode();">-->
+    </td>
+    <td style="background-color:lightgray; width:250px; height:250px;">
+      <div id="stick2" align="center" style="position:relative;">
+      <table><tr><td style="width:50px; height:50px; background-color:darkblue;"></td></tr></table>
+      </div>
+    </td>
+  </tr>
+  </table>
+  </td></tr>
+  <tr><td colspan="6"></td></tr>
+  <tr><td colspan="6"></td></tr>
+  <tr><td colspan="6"></td></tr>
+  <tr>
+  <td colspan="6">
+    <table width="100%"><tr><td style="text-align:center;">
+      <canvas id="myCanvas" width="960" height="700" style="background-color:LightGray;"></canvas>
+    </td></tr></table>
+  </td>
+  </tr>
+  </table>  
+<script>
+  class JoystickController
+  {
+    constructor( stickID, maxDistance, deadzone, joytype=0)
+    {
+      this.id = stickID;
+      let stick = document.getElementById(stickID);
+      this.dragStart = null;
+      this.touchId = null;
+      this.active = false;
+      this.value = { x: 0, y: 0 };
+      this.jtype = joytype;
+      let self = this;
+      function handleDown(event)
+      {
+        self.active = true;
+        stick.style.transition = "0s";
+        event.preventDefault();
+        if (event.changedTouches) self.dragStart = { x: event.changedTouches[0].clientX, y: event.changedTouches[0].clientY };
+        else self.dragStart = { x: event.clientX, y: event.clientY };
+        if (event.changedTouches) self.touchId = event.changedTouches[0].identifier;
+      }
+      function handleMove(event)
+      {
+        if ( !self.active ) return;
+        let touchmoveId = null;
+        if (event.changedTouches)
+        {
+          for (let i = 0; i < event.changedTouches.length; i++)
+          {
+            if(self.touchId == event.changedTouches[i].identifier)
+            {
+              touchmoveId = i;
+              event.clientX = event.changedTouches[i].clientX;
+              event.clientY = event.changedTouches[i].clientY;
+            }
+          }
+          if(touchmoveId == null) return;
+        }
+        let xDiff = 0; let yDiff = 0;
+        switch(self.jtype)
+        {
+          case 0: xDiff = event.clientX - self.dragStart.x; yDiff = event.clientY - self.dragStart.y; break;
+          case 1: xDiff = 0; yDiff = event.clientY - self.dragStart.y; break;
+          case 2: xDiff = event.clientX - self.dragStart.x; yDiff = 0; break;
+        }
+        const angle = Math.atan2(yDiff, xDiff);
+        const distance = Math.min(maxDistance, Math.hypot(xDiff, yDiff));
+        const xPosition = distance * Math.cos(angle);
+        const yPosition = distance * Math.sin(angle);
+        switch(self.jtype)
+        {
+          case 0: stick.style.transform = String("translate3d("+xPosition+"px, "+yPosition+"px, 0px)"); break;
+          case 1: stick.style.transform = String("translate3d(0px, "+yPosition+"px, 0px)"); break;
+          case 2: stick.style.transform = String("translate3d("+xPosition+"px, 0px,	0px)"); break;
+        }
+        const distance2 = (distance < deadzone) ? 0 : maxDistance / (maxDistance - deadzone) * (distance - deadzone);
+        const xPosition2 = distance2 * Math.cos(angle);
+        const yPosition2 = distance2 * Math.sin(angle);
+        const xPercent = parseFloat((xPosition2 / maxDistance).toFixed(4));
+        const yPercent = parseFloat((yPosition2 / maxDistance).toFixed(4));	    
+        self.value = { x: xPercent, y: yPercent };
+      }
+      function handleUp(event)
+      {
+        if ( !self.active ) return;
+        if (event.changedTouches && self.touchId != event.changedTouches[0].identifier) return;
+        stick.style.transition = ".2s";
+        stick.style.transform = "translate3d(0px, 0px, 0px)";
+        self.value = { x: 0, y: 0 };
+        self.touchId = null;
+        self.active = false;
+      }
+      stick.addEventListener("mousedown", handleDown);
+      stick.addEventListener("touchstart", handleDown);
+      document.addEventListener("mousemove", handleMove, {passive: false});
+      document.addEventListener("touchmove", handleMove, {passive: false});
+      document.addEventListener("mouseup", handleUp);
+      document.addEventListener("touchend", handleUp);
+    }
+  }
+
+  let joystick1 = new JoystickController("stick1", 100, 8, 1);//1:vert
+  let joystick2 = new JoystickController("stick2", 100, 8, 2);//2:horz
+  function loop(){requestAnimationFrame(loop);}
+  loop();
+</script>
+</body>
+</html>
