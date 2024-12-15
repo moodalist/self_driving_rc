@@ -5,5 +5,3 @@ ESP32 based Self-Driving RC-CAR DEMO Sample Program
 - Target Following Control using Two UtraSonic Sensors
 - Obstacle Avoiding Control using Single Point Lidar Sensor and a Servo Motor
 - Arduino C++
-
-- 
